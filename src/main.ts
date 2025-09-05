@@ -18,14 +18,18 @@ import {
     Observable,
     catchError,
     filter,
+    from,
     fromEvent,
     interval,
+    merge,
     map,
     scan,
     switchMap,
     take,
 } from "rxjs";
 import { fromFetch } from "rxjs/fetch";
+import { createFetchableDevEnvironment } from "vite";
+import { L } from "vitest/dist/chunks/reporters.d.BFLkQcL6.js";
 
 /** Constants */
 
@@ -41,22 +45,97 @@ const Birb = {
 
 const Constants = {
     PIPE_WIDTH: 50,
-    TICK_RATE_MS: 500, // Might need to change this!
+    TICK_RATE_MS: 20, 
+    GRAVITY: 1,
+    GROUND: 378.5,
+    SEED: 1234,
+    JUMP_STRENGTH: -9
 } as const;
 
 // User input
 
 type Key = "Space";
 
+type Pipe = Readonly<{
+    id: string; 
+    x: number;
+    gapY: number;
+    gapHeight: number;
+    isPassed: boolean;
+}>
+
 // State processing
 
 type State = Readonly<{
     gameEnd: boolean;
+    pipes: ReadonlyArray<Pipe>;
+    y: number;
+    velocity: number;
+    score: number;
+    seed: number;
+    tickCounter: number;
 }>;
 
+//copied from applied 4
 const initialState: State = {
     gameEnd: false,
+    pipes: [],
+    y: Constants.GROUND - 80,
+    velocity: 0,
+    score: 0,
+    seed: Constants.SEED,
+    tickCounter: 0
 };
+
+abstract class RNG {
+    private static m = 0x80000000; // 2^31
+    private static a = 1103515245;
+    private static c = 12345;
+
+    public static hash = (seed: number): number =>
+        (RNG.a * seed + RNG.c) % RNG.m;
+
+    public static scale = (hash: number): number =>
+        (2 * hash) / (RNG.m - 1) - 1; // in [-1, 1]
+}
+
+const collisionChecker = (state: State): boolean => {
+    const birb_x = Viewport.CANVAS_WIDTH * 0.3;
+    const birb_y = state.y;
+
+    if (birb_y <= 0 || birb_y >= Constants.GROUND - Birb.HEIGHT) {
+        return true;
+    }
+
+    return state.pipes.some(pipe => {
+        const leftPipe = pipe.x;
+        const rightPipe = pipe.x + Constants.PIPE_WIDTH;
+        const topGap = pipe.gapY - pipe.gapHeight / 2;
+        const bottomGap = pipe.gapY + pipe.gapHeight / 2;
+
+        if (birb_x + Birb.WIDTH > leftPipe && birb_x < rightPipe) {
+            if (birb_y < topGap || birb_y + Birb.HEIGHT > bottomGap) {
+                return true;
+            }
+        }
+        return false;
+    });
+};
+
+const jump$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(
+    document, 
+    "keydown",
+).pipe(
+    filter(event => event.code === "Space"),
+    filter(event => !event.repeat),
+    map(() => (s: State) => {
+        if (s.gameEnd) return s;
+        return {
+            ...s,
+            velocity: Constants.JUMP_STRENGTH
+        };
+    })
+);
 
 /**
  * Updates the state by proceeding with one time step.
@@ -64,7 +143,26 @@ const initialState: State = {
  * @param s Current state
  * @returns Updated state
  */
-const tick = (s: State) => s;
+const tick$: Observable<(s: State) => State> = interval(Constants.TICK_RATE_MS).pipe(
+        map(() => (s: State) => {
+            if (s.gameEnd) return s;
+            const newTickCounter = s.tickCounter + 1;
+            const newVel = s.velocity + Constants.GRAVITY;
+            const newY = Math.max(0, Math.min(s.y + newVel, Constants.GROUND - Birb.HEIGHT));
+            const newState = {
+                ...s,
+                y: newY,
+                velocity: newVel,
+                tickCounter: newTickCounter,
+                gameEnd: collisionChecker({
+                    ...s,
+                    y: newY,
+                })
+            };
+            return newState;
+        }),
+    );
+
 
 // Rendering (side effects)
 
@@ -147,6 +245,8 @@ const render = (): ((s: State) => void) => {
         });
         svg.appendChild(birdImg);
 
+        birdImg.setAttribute("y", `${s.y}`)
+
         // Draw a static pipe as a demonstration
         const pipeGapY = 200; // vertical center of the gap
         const pipeGapHeight = 100;
@@ -175,16 +275,9 @@ const render = (): ((s: State) => void) => {
 };
 
 export const state$ = (csvContents: string): Observable<State> => {
-    /** User input */
-
-    const key$ = fromEvent<KeyboardEvent>(document, "keypress");
-    const fromKey = (keyCode: Key) =>
-        key$.pipe(filter(({ code }) => code === keyCode));
-
-    /** Determines the rate of time steps */
-    const tick$ = interval(Constants.TICK_RATE_MS);
-
-    return tick$.pipe(scan((s: State) => ({ gameEnd: false }), initialState));
+   return merge(tick$, jump$).pipe(
+    scan((state: State, transform: (s: State) => State) => transform(state), initialState)
+   );
 };
 
 // The following simply runs your main function on window load.  Make sure to leave it in place.
