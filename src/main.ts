@@ -9,27 +9,42 @@
  * You will be marked on your functional programming style
  * as well as the functionality that you implement.
  *
- * Document your code! test 
+ * Document your code!
  */
 
+import { constants } from "buffer";
 import "./style.css";
 
 import {
     Observable,
     catchError,
     filter,
-    from,
     fromEvent,
     interval,
-    merge,
     map,
+    merge,
     scan,
+    startWith,
     switchMap,
     take,
+    takeWhile,
 } from "rxjs";
 import { fromFetch } from "rxjs/fetch";
-import { createFetchableDevEnvironment } from "vite";
-import { L } from "vitest/dist/chunks/reporters.d.BFLkQcL6.js";
+import { parse } from "path";
+
+
+export function createRngStreamFromSource<T>(source$: Observable<T>) {
+    return function createRngStream(
+        seed: number = 0,
+    ): Observable<number> {
+        const randomNumberStream = source$.pipe(
+            scan((currentSeed, _) => RNG.hash(currentSeed), seed),
+            map(hash => RNG.scale(hash))
+        );
+
+        return randomNumberStream;
+    };
+}
 
 /** Constants */
 
@@ -45,48 +60,56 @@ const Birb = {
 
 const Constants = {
     PIPE_WIDTH: 50,
-    TICK_RATE_MS: 20, 
+    TICK_RATE_MS: 500, // Might need to change this!
     GRAVITY: 1,
     GROUND: 378.5,
     SEED: 1234,
-    JUMP_STRENGTH: -9
+    FLAP_VELOCITY: -8,
+    CEILING: 0,
 } as const;
 
 // User input
 
 type Key = "Space";
 
+type GameState = "waiting" | "playing" | "gameOver";
+
+// Pipe
 type Pipe = Readonly<{
-    id: string; 
+    id: String; 
     x: number;
     gapY: number;
     gapHeight: number;
-    isPassed: boolean;
-}>
+    svgElements: Readonly<{
+        top: SVGElement;
+        bottom: SVGElement;
+    }>;
+}>;
+
 
 // State processing
 
 type State = Readonly<{
-    gameEnd: boolean;
+    gameState: GameState;
     pipes: ReadonlyArray<Pipe>;
     y: number;
     velocity: number;
-    score: number;
+    bounces: number;
     seed: number;
-    tickCounter: number;
+    startTime: number;
 }>;
 
-//copied from applied 4
 const initialState: State = {
-    gameEnd: false,
+    gameState: "waiting",
     pipes: [],
     y: Constants.GROUND - 80,
     velocity: 0,
-    score: 0,
+    bounces: 0,
     seed: Constants.SEED,
-    tickCounter: 0
+    startTime: 0,
 };
 
+//copied from applied 4
 abstract class RNG {
     private static m = 0x80000000; // 2^31
     private static a = 1103515245;
@@ -99,43 +122,26 @@ abstract class RNG {
         (2 * hash) / (RNG.m - 1) - 1; // in [-1, 1]
 }
 
-const collisionChecker = (state: State): boolean => {
-    const birb_x = Viewport.CANVAS_WIDTH * 0.3;
-    const birb_y = state.y;
+const boundaryCollisionChecker = (bird_y: number): boolean =>
+    bird_y <= Constants.CEILING || +Birb.HEIGHT >= Constants.GROUND;
 
-    if (birb_y <= 0 || birb_y >= Constants.GROUND - Birb.HEIGHT) {
-        return true;
-    }
-
-    return state.pipes.some(pipe => {
-        const leftPipe = pipe.x;
-        const rightPipe = pipe.x + Constants.PIPE_WIDTH;
-        const topGap = pipe.gapY - pipe.gapHeight / 2;
-        const bottomGap = pipe.gapY + pipe.gapHeight / 2;
-
-        if (birb_x + Birb.WIDTH > leftPipe && birb_x < rightPipe) {
-            if (birb_y < topGap || birb_y + Birb.HEIGHT > bottomGap) {
-                return true;
-            }
-        }
-        return false;
-    });
-};
 
 const jump$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(
-    document, 
-    "keydown",
-).pipe(
-    filter(event => event.code === "Space"),
-    filter(event => !event.repeat),
-    map(() => (s: State) => {
-        if (s.gameEnd) return s;
-        return {
-            ...s,
-            velocity: Constants.JUMP_STRENGTH
-        };
-    })
-);
+        document,
+        "keydown",
+    ).pipe(
+        filter(event => event.code === "Space"),
+        map(() => (s: State) => {
+            const newHash = RNG.hash(s.seed);        
+            const rand = RNG.scale(newHash);         
+            const velocity = -9 + rand * 3;            
+            return {
+                ...s,
+                velocity,
+                seed: newHash,                          
+            };
+        })
+    );
 
 /**
  * Updates the state by proceeding with one time step.
@@ -143,26 +149,34 @@ const jump$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(
  * @param s Current state
  * @returns Updated state
  */
-const tick$: Observable<(s: State) => State> = interval(Constants.TICK_RATE_MS).pipe(
-        map(() => (s: State) => {
-            if (s.gameEnd) return s;
-            const newTickCounter = s.tickCounter + 1;
-            const newVel = s.velocity + Constants.GRAVITY;
-            const newY = Math.max(0, Math.min(s.y + newVel, Constants.GROUND - Birb.HEIGHT));
-            const newState = {
-                ...s,
-                y: newY,
-                velocity: newVel,
-                tickCounter: newTickCounter,
-                gameEnd: collisionChecker({
-                    ...s,
-                    y: newY,
-                })
-            };
-            return newState;
-        }),
-    );
+const tick$: Observable<(s: State) => State> = interval(20).pipe(
+    map(() => (s: State) => {
+        const velocity = s.velocity + Constants.GRAVITY;
+        const y = s.y + velocity;
+        const hitGround = y >= Constants.GROUND;
+        const bounces = hitGround && s.y < Constants.GROUND ? s.bounces + 1 : s.bounces;
+        return {
+            ...s,
+            velocity: hitGround ? -velocity * 0.6 : velocity,
+            y: hitGround ? Constants.GROUND : y,
+            bounces,
+        };
+    }),
+);
 
+const gameStart$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(document, "keydown").pipe(
+    filter(event => event.code ==="Space"),
+    map(() => (s: State) => {
+        return s.gameState ==="waiting" ? {...s, gameState: "playing", startTime: s.startTime}: s;
+    })
+);
+
+const gameRestart$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(document, "keydown").pipe(
+    filter(event => event.code ==="KeyR"),
+    map(() => (s: State) => {
+        return s.gameState ==="gameOver" ? {...initialState, time: s.startTime}: s;
+    })
+);
 
 // Rendering (side effects)
 
@@ -245,8 +259,6 @@ const render = (): ((s: State) => void) => {
         });
         svg.appendChild(birdImg);
 
-        birdImg.setAttribute("y", `${s.y}`)
-
         // Draw a static pipe as a demonstration
         const pipeGapY = 200; // vertical center of the gap
         const pipeGapHeight = 100;
@@ -275,10 +287,13 @@ const render = (): ((s: State) => void) => {
 };
 
 export const state$ = (csvContents: string): Observable<State> => {
-   return merge(tick$, jump$).pipe(
-    scan((state: State, transform: (s: State) => State) => transform(state), initialState)
-   );
+    return merge(jump$, tick$).pipe(
+        startWith((s: State) => s), // Identity function to start with initial state
+        scan((state: State, update: (s: State) => State) => update(state), initialState),
+        takeWhile(state => true, true) // Keep the stream alive even when game ends
+    );
 };
+
 
 // The following simply runs your main function on window load.  Make sure to leave it in place.
 // You should not need to change this, beware if you are.
@@ -287,7 +302,7 @@ if (typeof window !== "undefined") {
     const baseUrl = `${protocol}//${hostname}${port ? `:${port}` : ""}`;
     const csvUrl = `${baseUrl}/assets/map.csv`;
 
-    // Get the file from URL
+    // Get the file from URLa
     const csv$ = fromFetch(csvUrl).pipe(
         switchMap(response => {
             if (response.ok) {
