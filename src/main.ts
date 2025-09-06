@@ -107,6 +107,7 @@ type State = Readonly<{
     seed: number;
     time: number;
     gameStartTime: number;
+    lives: number;
 }>;
 
 const initialState: State = {
@@ -118,6 +119,7 @@ const initialState: State = {
     seed: Constants.SEED,
     time: 0,
     gameStartTime: 0,
+    lives: 3,
 };
 
 //copied from applied 4
@@ -132,6 +134,21 @@ abstract class RNG {
     public static scale = (hash: number): number =>
         (2 * hash) / (RNG.m - 1) - 1; // in [-1, 1]
 }
+
+
+const pipesCollisionChecker = (bird_y: number, pipe: Pipe): boolean => {
+    const leftBird = Birb.START_AT;
+    const rightBird = Birb.START_AT + Birb.WIDTH;
+    const topBird = bird_y;
+    const bottomBird = bird_y + Birb.HEIGHT;
+
+    const leftPipe = pipe.x;
+    const rightPipe = pipe.x +Constants.PIPE_WIDTH;
+
+    return (rightBird > leftPipe && leftBird< rightPipe) 
+        ? (topBird < pipe.gapY - pipe.gapHeight / 2 || bottomBird > pipe.gapY + pipe.gapHeight / 2)
+        : false; 
+};
 
 const boundaryCollisionChecker = (bird_y: number): boolean =>
     bird_y <= Constants.CEILING || bird_y + Birb.HEIGHT >= Constants.GROUND;
@@ -163,33 +180,25 @@ const jump$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(
 const tick$: Observable<(s: State) => State> = interval(Constants.TICK_RATE_MS).pipe(
   map(() => (s: State) => {
     const newTime = s.time + Constants.TICK_RATE_MS;
-
-    // game is active flag
     const active = s.gameState === "playing";
-
-    // velocity after gravity
-    const vAfterGravity = s.velocity + Constants.GRAVITY;
-    const yAfter = s.y + vAfterGravity;
-
-    // collisions
-    const hitCeiling = active && vAfterGravity < 0 && yAfter <= Constants.CEILING;
-    const hitGround  = active && vAfterGravity > 0 && yAfter + Birb.HEIGHT >= Constants.GROUND;
-
-    // clamp Y
+    const velAfterGrav = s.velocity + Constants.GRAVITY;
+    const yAfter = s.y + velAfterGrav;
+    const ceilingCollision = active && velAfterGrav < 0 && yAfter <= Constants.CEILING;
+    const groundCollision  = active && velAfterGrav > 0 && yAfter + Birb.HEIGHT >= Constants.GROUND;
+    const pipeCollision = active && s.pipes.some(p => pipesCollisionChecker(yAfter, p));
+    const allCollisions = ceilingCollision || groundCollision || pipeCollision;
+    const livesUpdator = allCollisions ? s.lives - 1 : s.lives;
+    const gameOverCon = livesUpdator <= 0 ? "gameOver" : s.gameState;
     const newY =
-      hitCeiling ? Constants.CEILING :
-      hitGround  ? Constants.GROUND - Birb.HEIGHT :
+      ceilingCollision ? Constants.CEILING :
+      groundCollision  ? Constants.GROUND - Birb.HEIGHT :
       (active ? yAfter : s.y);
-
-    // constant bounce velocity
     const newVelocity =
-      hitCeiling ?  Math.abs(Constants.BOUNCE_SPEED) :
-      hitGround  ? -Math.abs(Constants.BOUNCE_SPEED) :
-      (active ? vAfterGravity : s.velocity);
-
-    // count bounces only while active
+      ceilingCollision ?  Math.abs(Constants.BOUNCE_SPEED) :
+      groundCollision  ? -Math.abs(Constants.BOUNCE_SPEED) :
+      (active ? velAfterGrav : s.velocity);
     const newBounces =
-      s.bounces + (active && (hitCeiling || hitGround) ? 1 : 0);
+      s.bounces + (active && (ceilingCollision || groundCollision) ? 1 : 0);
 
     return {
       ...s,
@@ -198,7 +207,8 @@ const tick$: Observable<(s: State) => State> = interval(Constants.TICK_RATE_MS).
       bounces: newBounces,
       seed: s.seed,
       time: newTime,
-      gameState: s.gameState,
+      lives: livesUpdator,
+      gameState: gameOverCon,
     };
   })
 );
@@ -304,6 +314,7 @@ const render = (): ((s: State) => void) => {
         `${Math.max(0, Math.min(s.y, Viewport.CANVAS_HEIGHT - Birb.HEIGHT))}`,
         );
 
+        livesText.textContent = `${s.lives}`; 
 
         // Draw a static pipe as a demonstration
         const pipeGapY = 200; // vertical center of the gap
