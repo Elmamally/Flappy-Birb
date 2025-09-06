@@ -108,6 +108,8 @@ type State = Readonly<{
     time: number;
     gameStartTime: number;
     lives: number;
+    lastGamePlay: ReadonlyArray<Readonly<{ y: number; time: number }>>;
+    presentGamePlay: ReadonlyArray<Readonly<{ y: number; time: number }>>;
 }>;
 
 const initialState: State = {
@@ -120,6 +122,8 @@ const initialState: State = {
     time: 0,
     gameStartTime: 0,
     lives: 3,
+    lastGamePlay: [],
+    presentGamePlay: [],
 };
 
 //copied from applied 4
