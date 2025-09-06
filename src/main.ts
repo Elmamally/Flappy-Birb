@@ -351,6 +351,17 @@ const render = (): ((s: State) => void) => {
         const playTime = s.time - s.gameStartTime;
         const ghostPos = ghostBird(s.lastGamePlay, playTime);
 
+        ghostPos
+         ? (
+            ghostBirdImg.setAttribute("x", `${Birb.START_AT - Birb.WIDTH / 2}`),
+            ghostBirdImg.setAttribute(
+                "y",
+                `${Math.max(0, Math.min(ghostPos.y, Viewport.CANVAS_HEIGHT - Birb.HEIGHT))}`
+            ),
+            ghostBirdImg.style.visibility = "visible"
+            )
+         : (ghostBirdImg.style.visibility = "hidden");
+
         // Draw a static pipe as a demonstration
         const pipeGapY = 200; // vertical center of the gap
         const pipeGapHeight = 100;
