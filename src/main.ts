@@ -56,12 +56,13 @@ const Viewport = {
 const Birb = {
     WIDTH: 42,
     HEIGHT: 30,
+    START_AT: 180,
 } as const;
 
 const Constants = {
     PIPE_WIDTH: 50,
-    TICK_RATE_MS: 500, // Might need to change this!
-    GRAVITY: 1,
+    TICK_RATE_MS: 20, // Might need to change this!
+    GRAVITY: 0.5,
     GROUND: 378.5,
     SEED: 1234,
     FLAP_VELOCITY: -8,
@@ -86,6 +87,12 @@ type Pipe = Readonly<{
     }>;
 }>;
 
+type PipeData = Readonly<{
+    gap_y: number;
+    gap_height: number;
+    time: number;
+}>
+
 
 // State processing
 
@@ -96,7 +103,8 @@ type State = Readonly<{
     velocity: number;
     bounces: number;
     seed: number;
-    startTime: number;
+    time: number;
+    gameStartTime: number;
 }>;
 
 const initialState: State = {
@@ -106,7 +114,8 @@ const initialState: State = {
     velocity: 0,
     bounces: 0,
     seed: Constants.SEED,
-    startTime: 0,
+    time: 0,
+    gameStartTime: 0,
 };
 
 //copied from applied 4
@@ -134,7 +143,7 @@ const jump$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(
         map(() => (s: State) => {
             const newHash = RNG.hash(s.seed);        
             const rand = RNG.scale(newHash);         
-            const velocity = -9 + rand * 3;            
+            const velocity = Constants.FLAP_VELOCITY;            
             return {
                 ...s,
                 velocity,
@@ -149,32 +158,71 @@ const jump$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(
  * @param s Current state
  * @returns Updated state
  */
-const tick$: Observable<(s: State) => State> = interval(20).pipe(
-    map(() => (s: State) => {
-        const velocity = s.velocity + Constants.GRAVITY;
-        const y = s.y + velocity;
-        const hitGround = y >= Constants.GROUND;
-        const bounces = hitGround && s.y < Constants.GROUND ? s.bounces + 1 : s.bounces;
-        return {
+const tick$: Observable<(s: State) => State> = interval(Constants.TICK_RATE_MS).pipe(
+  map(() => (s: State) => {
+    const newTime = s.time + Constants.TICK_RATE_MS;
+
+    return s.gameState !== "playing"
+      ? { ...s, time: newTime }
+      : (() => {
+          const velocity = s.velocity + Constants.GRAVITY;
+          const y = s.y + velocity;
+          const boundaryCollision = boundaryCollisionChecker(y);
+
+          const bounceVelocity = -velocity * 0.6;
+          const bounceBounces = s.bounces + 1;
+
+          const newVelocityBase = boundaryCollision ? bounceVelocity : velocity;
+          const newBouncesBase = boundaryCollision ? bounceBounces : s.bounces;
+
+          const gameStateBase =
+            boundaryCollision && newBouncesBase >= 5 ? "gameOver" : s.gameState;
+
+          const clampedAtCeiling = y < Constants.CEILING;
+          const clampedAtGround = y + Birb.HEIGHT > Constants.GROUND;
+
+          const newY = clampedAtCeiling
+            ? Constants.CEILING
+            : clampedAtGround
+            ? Constants.GROUND - Birb.HEIGHT 
+            : y;
+
+          const newVelocity = clampedAtCeiling
+            ? Math.abs(newVelocityBase)
+            : clampedAtGround && newVelocityBase > 0
+            ? -newVelocityBase * 0.6
+            : newVelocityBase;
+
+          const newBounces =
+            clampedAtGround && newVelocityBase > 0
+              ? newBouncesBase + 1
+              : newBouncesBase;
+
+          return {
             ...s,
-            velocity: hitGround ? -velocity * 0.6 : velocity,
-            y: hitGround ? Constants.GROUND : y,
-            bounces,
-        };
-    }),
+            velocity: newVelocity,
+            y: newY,
+            bounces: newBounces,
+            seed: s.seed, 
+            time: newTime,
+            gameState: gameStateBase,
+          };
+        })();
+  })
 );
+
 
 const gameStart$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(document, "keydown").pipe(
     filter(event => event.code ==="Space"),
     map(() => (s: State) => {
-        return s.gameState ==="waiting" ? {...s, gameState: "playing", startTime: s.startTime}: s;
+        return s.gameState ==="waiting" ? {...s, gameState: "playing", startTime: s.time}: s;
     })
 );
 
 const gameRestart$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(document, "keydown").pipe(
     filter(event => event.code ==="KeyR"),
     map(() => (s: State) => {
-        return s.gameState ==="gameOver" ? {...initialState, time: s.startTime}: s;
+        return s.gameState ==="gameOver" ? {...initialState, time: s.time}: s;
     })
 );
 
@@ -241,6 +289,14 @@ const render = (): ((s: State) => void) => {
         "viewBox",
         `0 0 ${Viewport.CANVAS_WIDTH} ${Viewport.CANVAS_HEIGHT}`,
     );
+
+    const birdImg: SVGElement = createSvgElement(svg.namespaceURI, "image", {
+        href: "assets/birb.png",
+        width: `${Birb.WIDTH}`,
+        height: `${Birb.HEIGHT}`,
+    });
+    svg.appendChild(birdImg);
+
     /**
      * Renders the current state to the canvas.
      *
@@ -249,15 +305,12 @@ const render = (): ((s: State) => void) => {
      * @param s Current state
      */
     return (s: State) => {
-        // Add birb to the main grid canvas
-        const birdImg = createSvgElement(svg.namespaceURI, "image", {
-            href: "assets/birb.png",
-            x: `${Viewport.CANVAS_WIDTH * 0.3 - Birb.WIDTH / 2}`,
-            y: `${Viewport.CANVAS_HEIGHT / 2 - Birb.HEIGHT / 2}`,
-            width: `${Birb.WIDTH}`,
-            height: `${Birb.HEIGHT}`,
-        });
-        svg.appendChild(birdImg);
+        birdImg.setAttribute("x", `${Birb.START_AT - Birb.WIDTH / 2}`);
+        birdImg.setAttribute(
+        "y",
+        `${Math.max(0, Math.min(s.y, Viewport.CANVAS_HEIGHT - Birb.HEIGHT))}`,
+        );
+
 
         // Draw a static pipe as a demonstration
         const pipeGapY = 200; // vertical center of the gap
@@ -281,16 +334,16 @@ const render = (): ((s: State) => void) => {
             fill: "green",
         });
 
-        svg.appendChild(pipeTop);
-        svg.appendChild(pipeBottom);
+        //svg.appendChild(pipeTop);
+        //svg.appendChild(pipeBottom);
     };
 };
 
 export const state$ = (csvContents: string): Observable<State> => {
-    return merge(jump$, tick$).pipe(
-        startWith((s: State) => s), // Identity function to start with initial state
-        scan((state: State, update: (s: State) => State) => update(state), initialState),
-        takeWhile(state => true, true) // Keep the stream alive even when game ends
+    return merge(jump$, tick$, gameRestart$, gameStart$).pipe(
+        startWith((s: State) => s), 
+        scan((state, update) => update(state), initialState),
+        takeWhile(() => true, true) 
     );
 };
 
