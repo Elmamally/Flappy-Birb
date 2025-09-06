@@ -193,6 +193,10 @@ const tick$: Observable<(s: State) => State> = interval(Constants.TICK_RATE_MS).
     const allCollisions = ceilingCollision || groundCollision || pipeCollision;
     const livesUpdator = allCollisions ? s.lives - 1 : s.lives;
     const gameOverCon = livesUpdator <= 0 ? "gameOver" : s.gameState;
+    const play = active
+        ? [...s.presentGamePlay, {time: newTime - s.gameStartTime, y: yAfter}]
+        : s.presentGamePlay;
+    
     const newY =
       ceilingCollision ? Constants.CEILING :
       groundCollision  ? Constants.GROUND - Birb.HEIGHT :
@@ -213,6 +217,8 @@ const tick$: Observable<(s: State) => State> = interval(Constants.TICK_RATE_MS).
       time: newTime,
       lives: livesUpdator,
       gameState: gameOverCon,
+      presentGamePlay: gameOverCon === "gameOver" ? [] : play,
+      lastGamePlay: gameOverCon === "gameOver" ? s.presentGamePlay : s.lastGamePlay,
     };
   })
 );
@@ -232,6 +238,19 @@ const gameRestart$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(d
         return s.gameState ==="gameOver" ? {...initialState, time: s.time}: s;
     })
 );
+
+const ghostBird = (
+    play: ReadonlyArray<Readonly<{ y: number; time: number }>>,
+    playTime: number, // Changed from Number to number
+    index: number = 0
+): (Readonly<{ y: number; time: number }>) | null =>
+    index >= play.length
+    ? null
+    : (play[index].time <= playTime &&
+       (index + 1 >= play.length || play[index + 1].time > playTime))
+      ? play[index]
+      : ghostBird(play, playTime, index + 1);
+
 
 // Rendering (side effects)
 
@@ -304,6 +323,15 @@ const render = (): ((s: State) => void) => {
     });
     svg.appendChild(birdImg);
 
+    const ghostBirdImg: SVGElement = createSvgElement(svg.namespaceURI, "image", {
+        href: "assets/birb.png",
+        width: `${Birb.WIDTH}`,
+        height: `${Birb.HEIGHT}`,
+        opacity: "0.5",
+        style: "filter: hue-rotate(120deg) brightness(0.7);",
+    });
+    svg.appendChild(ghostBirdImg);
+
     /**
      * Renders the current state to the canvas.
      *
@@ -319,6 +347,9 @@ const render = (): ((s: State) => void) => {
         );
 
         livesText.textContent = `${s.lives}`; 
+
+        const playTime = s.time - s.gameStartTime;
+        const ghostPos = ghostBird(s.lastGamePlay, playTime);
 
         // Draw a static pipe as a demonstration
         const pipeGapY = 200; // vertical center of the gap
