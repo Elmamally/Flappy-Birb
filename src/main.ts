@@ -63,10 +63,12 @@ const Constants = {
     PIPE_WIDTH: 50,
     TICK_RATE_MS: 20, // Might need to change this!
     GRAVITY: 0.5,
-    GROUND: 378.5,
+    GROUND: Viewport.CANVAS_HEIGHT,
     SEED: 1234,
-    FLAP_VELOCITY: -8,
+    FLAP_VELOCITY: -6,
     CEILING: 0,
+    BOUNCE_SPEED: 6,
+    BOUNCE_HEIGHT: -8,
 } as const;
 
 // User input
@@ -132,7 +134,7 @@ abstract class RNG {
 }
 
 const boundaryCollisionChecker = (bird_y: number): boolean =>
-    bird_y <= Constants.CEILING || +Birb.HEIGHT >= Constants.GROUND;
+    bird_y <= Constants.CEILING || bird_y + Birb.HEIGHT >= Constants.GROUND;
 
 
 const jump$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(
@@ -162,54 +164,45 @@ const tick$: Observable<(s: State) => State> = interval(Constants.TICK_RATE_MS).
   map(() => (s: State) => {
     const newTime = s.time + Constants.TICK_RATE_MS;
 
-    return s.gameState !== "playing"
-      ? { ...s, time: newTime }
-      : (() => {
-          const velocity = s.velocity + Constants.GRAVITY;
-          const y = s.y + velocity;
-          const boundaryCollision = boundaryCollisionChecker(y);
+    // game is active flag
+    const active = s.gameState === "playing";
 
-          const bounceVelocity = -velocity * 0.6;
-          const bounceBounces = s.bounces + 1;
+    // velocity after gravity
+    const vAfterGravity = s.velocity + Constants.GRAVITY;
+    const yAfter = s.y + vAfterGravity;
 
-          const newVelocityBase = boundaryCollision ? bounceVelocity : velocity;
-          const newBouncesBase = boundaryCollision ? bounceBounces : s.bounces;
+    // collisions
+    const hitCeiling = active && vAfterGravity < 0 && yAfter <= Constants.CEILING;
+    const hitGround  = active && vAfterGravity > 0 && yAfter + Birb.HEIGHT >= Constants.GROUND;
 
-          const gameStateBase =
-            boundaryCollision && newBouncesBase >= 5 ? "gameOver" : s.gameState;
+    // clamp Y
+    const newY =
+      hitCeiling ? Constants.CEILING :
+      hitGround  ? Constants.GROUND - Birb.HEIGHT :
+      (active ? yAfter : s.y);
 
-          const clampedAtCeiling = y < Constants.CEILING;
-          const clampedAtGround = y + Birb.HEIGHT > Constants.GROUND;
+    // constant bounce velocity
+    const newVelocity =
+      hitCeiling ?  Math.abs(Constants.BOUNCE_SPEED) :
+      hitGround  ? -Math.abs(Constants.BOUNCE_SPEED) :
+      (active ? vAfterGravity : s.velocity);
 
-          const newY = clampedAtCeiling
-            ? Constants.CEILING
-            : clampedAtGround
-            ? Constants.GROUND - Birb.HEIGHT 
-            : y;
+    // count bounces only while active
+    const newBounces =
+      s.bounces + (active && (hitCeiling || hitGround) ? 1 : 0);
 
-          const newVelocity = clampedAtCeiling
-            ? Math.abs(newVelocityBase)
-            : clampedAtGround && newVelocityBase > 0
-            ? -newVelocityBase * 0.6
-            : newVelocityBase;
-
-          const newBounces =
-            clampedAtGround && newVelocityBase > 0
-              ? newBouncesBase + 1
-              : newBouncesBase;
-
-          return {
-            ...s,
-            velocity: newVelocity,
-            y: newY,
-            bounces: newBounces,
-            seed: s.seed, 
-            time: newTime,
-            gameState: gameStateBase,
-          };
-        })();
+    return {
+      ...s,
+      velocity: newVelocity,
+      y: newY,
+      bounces: newBounces,
+      seed: s.seed,
+      time: newTime,
+      gameState: s.gameState,
+    };
   })
 );
+
 
 
 const gameStart$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(document, "keydown").pipe(
