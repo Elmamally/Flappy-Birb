@@ -75,6 +75,8 @@ type Pipe = Readonly<{
     }>;
 }>;
 
+//initialisation of all the states
+
 type GameState = "playing" | "gameOver" | "waiting" | "paused";
 
 type State = Readonly<{
@@ -98,19 +100,6 @@ type PipeData = Readonly<{
     time: number;
 }>;
 
-// Random Number Generator, coppied from applied 4
-abstract class RNG {
-    private static m = 0x80000000; // 2^31
-    private static a = 1103515245;
-    private static c = 12345;
-
-    public static hash = (seed: number): number =>
-        (RNG.a * seed + RNG.c) % RNG.m;
-
-    public static scale = (hash: number): number =>
-        (2 * hash) / (RNG.m - 1) - 1; // in [-1, 1]
-}
-
 const initialState: State = {
     gameState: "waiting",
     pipes: [],
@@ -126,6 +115,25 @@ const initialState: State = {
     isCollidingPipeId: null,
 };
 
+// Random Number Generator, coppied from applied 4
+abstract class RNG {
+    private static m = 0x80000000; // 2^31
+    private static a = 1103515245;
+    private static c = 12345;
+
+    public static hash = (seed: number): number =>
+        (RNG.a * seed + RNG.c) % RNG.m;
+
+    public static scale = (hash: number): number =>
+        (2 * hash) / (RNG.m - 1) - 1; // in [-1, 1]
+}
+
+/**
+ * a function to get all the data inside the map.csv
+ * is expected to get the gap_y, gap_height, and time for the pipes
+ * @param csvContent 
+ * @returns 
+ */
 const parsePipeData = (csvContent: string): ReadonlyArray<PipeData> => {
     const lines = csvContent.trim().split("\n").slice(1);
 
@@ -140,7 +148,7 @@ const parsePipeData = (csvContent: string): ReadonlyArray<PipeData> => {
         };
         });
 
-    const MINIMUM_PIPE_SPACING = 2000; 
+    const MINIMUM_PIPE_SPACING = 2000; //makes sure that the spicing between the pipes are 2 seconds, like the ones noted in csv
     const filtered: PipeData[] = [];
 
     rawPipes.forEach((pipe) => {
@@ -152,6 +160,13 @@ const parsePipeData = (csvContent: string): ReadonlyArray<PipeData> => {
     return filtered;
 };
 
+/**
+ * function to create the pipes according to the data provided
+ * @param pipeData 
+ * @param index 
+ * @param x 
+ * @returns 
+ */
 const createPipe = (pipeData: PipeData, index: number, x: number = Viewport.CANVAS_WIDTH): Pipe => ({
   id: `pipe-${index}`,
   x,
@@ -160,7 +175,13 @@ const createPipe = (pipeData: PipeData, index: number, x: number = Viewport.CANV
   passed: false,
 });
 
-const checkBirdPipeCollision = (birdY: number, pipe: Pipe): boolean => {
+/**
+ * check if the bird has collided with any of the pipes
+ * @param birdY 
+ * @param pipe 
+ * @returns 
+ */
+const pipeCollisionChecker = (birdY: number, pipe: Pipe): boolean => {
   const padX = 6, padY = 4; 
 
   const birdLeft = Birb.START_X + padX;
@@ -177,10 +198,22 @@ const checkBirdPipeCollision = (birdY: number, pipe: Pipe): boolean => {
   return birdRight >= pipeLeft && birdLeft <= pipeRight && (birdTop < gapTop || birdBottom > gapBottom);
 };
 
-
-const checkBirdBoundaryCollision = (birdY: number): boolean =>
+/**
+ * checks if the bird has collided with either ceiling or ground
+ * @param birdY 
+ * @returns 
+ */
+const boundaryCollisionChecker = (birdY: number): boolean =>
     birdY <= Constants.CEILING || birdY + Birb.HEIGHT >= Constants.GROUND;
 
+/**
+ * calculate the bounce velocity
+ * should be random as stated in the pdf requirement
+ * @param birdY 
+ * @param pipe 
+ * @param seed 
+ * @returns 
+ */
 const calculateBounceVelocity = (
     birdY: number,
     pipe: Pipe | null,
@@ -207,6 +240,11 @@ const calculateBounceVelocity = (
     };
 };
 
+/**
+ * updating the bird as the game goes on
+ * @param state 
+ * @returns 
+ */
 const updateBirdPhysics = (state: State): State => ({
     ...state,
     velocity: state.velocity + Constants.GRAVITY,
@@ -214,13 +252,19 @@ const updateBirdPhysics = (state: State): State => ({
     currentGameHistory: [...state.currentGameHistory, { y: state.y, time: state.time }],
 });
 
+/**
+ * updates the pipes as the game goes on
+ * @param state 
+ * @param pipeDataArray 
+ * @returns 
+ */
 const updatePipes = (state: State, pipeDataArray: ReadonlyArray<PipeData>): State => {
     const updatedPipes = state.pipes
         .map((pipe) => ({ ...pipe, x: pipe.x - Constants.PIPE_SPEED }))
         .filter((pipe) => pipe.x + Constants.PIPE_WIDTH > -50);
 
     const elapsed = state.time - state.gameStartTime; 
-    const speedPxPerMs = Constants.PIPE_SPEED / Constants.TICK_RATE_MS; 
+    const speedPxPerMs = Constants.PIPE_SPEED / Constants.TICK_RATE_MS;  //calculates the speed of pipes per the tick rate
 
     const newPipesToAdd = pipeDataArray
         .map((pd, idx) => ({ pd, idx }))
@@ -240,6 +284,12 @@ const updatePipes = (state: State, pipeDataArray: ReadonlyArray<PipeData>): Stat
     };
 };
 
+/**
+ * updates the score
+ * should be according to how many pipes the bird has passed successfully
+ * @param state 
+ * @returns 
+ */
 const updateScore = (state: State): State => {
   const newPipes = state.pipes.map((pipe) =>
     !pipe.passed && pipe.x + Constants.PIPE_WIDTH < Birb.START_X ? { ...pipe, passed: true } : pipe
@@ -256,9 +306,14 @@ const updateScore = (state: State): State => {
   };
 };
 
+/**
+ * a combination of boundary checker and pipe checker
+ * @param state 
+ * @returns 
+ */
 const checkCollisions = (state: State): State => {
-  const collidingPipe = state.pipes.find((pipe) => checkBirdPipeCollision(state.y, pipe));
-  const boundaryCollision = checkBirdBoundaryCollision(state.y);
+  const collidingPipe = state.pipes.find((pipe) => pipeCollisionChecker(state.y, pipe));
+  const boundaryCollision = boundaryCollisionChecker(state.y);
 
   const collisionId = collidingPipe ? collidingPipe.id : boundaryCollision ? "boundary" : null;
   const collisionNow = !!collisionId;
@@ -281,7 +336,12 @@ const checkCollisions = (state: State): State => {
     : state;
 };
 
-
+/**
+ * check if the game is over already
+ * @param state 
+ * @param pipeDataArray 
+ * @returns 
+ */
 const checkGameEnd = (state: State, pipeDataArray: ReadonlyArray<PipeData>): State => {
     const lastPipeTime = Math.max(...pipeDataArray.map((p) => p.time));
 
@@ -315,6 +375,10 @@ const createSvgElement = (
     return elem;
 };
 
+/**
+ * render function
+ * @returns 
+ */
 const render = (): ((s: State) => void) => {
     //Canvas elements
     const gameOver = document.querySelector("#gameOver") as SVGElement | null;
@@ -339,10 +403,12 @@ const render = (): ((s: State) => void) => {
      */
 
     return (s: State) => {
+        //displays the text for the lives, score and show the gameover
         livesText && (livesText.textContent = `${s.lives}`);
         scoreText && (scoreText.textContent = `${s.score}`);
         gameOver && (gameOver.style.visibility = s.gameState === "gameOver" ? "visible" : "hidden");
 
+    //bird img
     birdRef.current ||
       ((() => {
         const el = createSvgElement(svg.namespaceURI, "image", {
@@ -358,7 +424,7 @@ const render = (): ((s: State) => void) => {
     birdRef.current!.setAttribute("y", `${Math.max(0, Math.min(s.y, Viewport.CANVAS_HEIGHT - Birb.HEIGHT))}`);
 
 const gameTime = s.time - s.gameStartTime;
-
+    //ghost bird
     s.previousGameHistory.forEach((run, runIndex) => {
         const existing = ghostMap.get(runIndex);
         existing ||
@@ -400,6 +466,7 @@ const gameTime = s.time - s.gameStartTime;
         ghostMap.delete(k);
     });
 
+    //pipes
     s.pipes.forEach((pipe) => {
     pipeElements.has(pipe.id) ||
         (() => {
@@ -436,6 +503,16 @@ const gameTime = s.time - s.gameStartTime;
   };
 };
 
+/**
+ * this is for all the observables
+ * so that the game can have the feature of jump(for the bird), 
+ * the usual tick observable, 
+ * a feature to restart the game,
+ * a feature to start the game, 
+ * and finally a feature to pause the game
+ * @param csvContents 
+ * @returns 
+ */
 export const state$ = (csvContents: string): Observable<State> => {
     const pipeDataArray = parsePipeData(csvContents);
 
