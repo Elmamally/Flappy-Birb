@@ -75,7 +75,7 @@ type Pipe = Readonly<{
     }>;
 }>;
 
-type GameState = "playing" | "gameOver" | "waiting";
+type GameState = "playing" | "gameOver" | "waiting" | "paused";
 
 type State = Readonly<{
     gameState: GameState;
@@ -329,7 +329,7 @@ const render = (): ((s: State) => void) => {
     const birdRef: { current: SVGElement | null } = { current: null };
     const ghostMap: Map<number, SVGElement> = new Map();
     const pipeElements = new Map<string, { top: SVGElement; bottom: SVGElement }>();
-     
+
     /**
      * Renders the current state to the canvas.
      *
@@ -437,76 +437,87 @@ const gameTime = s.time - s.gameStartTime;
 };
 
 export const state$ = (csvContents: string): Observable<State> => {
-  const pipeDataArray = parsePipeData(csvContents);
+    const pipeDataArray = parsePipeData(csvContents);
 
-  const jump$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
-    filter((event) => event.code === "Space"),
-    map(
-      () =>
-        (state: State): State =>
-          state.gameState === "playing"
-            ? ((newHash) => ({
-                ...state,
-                velocity: Constants.FLAP_VELOCITY + RNG.scale(newHash) * Constants.RANDOM_VELOCITY_RANGE,
-                seed: newHash,
-              }))(RNG.hash(state.seed))
-            : state
+    const jump$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
+        filter((event) => event.code === "Space"),
+        map(
+        () =>
+            (state: State): State =>
+            state.gameState === "playing"
+                ? ((newHash) => ({
+                    ...state,
+                    velocity: Constants.FLAP_VELOCITY + RNG.scale(newHash) * Constants.RANDOM_VELOCITY_RANGE,
+                    seed: newHash,
+                }))(RNG.hash(state.seed))
+                : state
+        )
+    );
+
+    const tick$ = interval(Constants.TICK_RATE_MS).pipe(
+        map(
+            () =>
+            (state: State): State =>
+                state.gameState !== "playing"
+                ? state // paused, waiting, or gameOver → no updates
+                : ((newTime: number) =>
+                    [updateBirdPhysics,
+                    (s: State) => updatePipes(s, pipeDataArray),
+                    updateScore,
+                    (s: State) => checkCollisions(s),
+                    (s: State) => checkGameEnd(s, pipeDataArray)]
+                    .reduce((acc, fn) => fn(acc), { ...state, time: newTime })
+                    )(state.time + Constants.TICK_RATE_MS)
+        )
+        );
+
+
+    const startGame$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
+        filter((event) => event.code === "Space"),
+        map(
+        () =>
+            (state: State): State =>
+            state.gameState === "waiting"
+                ? { ...state, gameState: "playing", gameStartTime: state.time, currentGameHistory: [] }
+                : state
+        )
+    );
+
+    const restart$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
+        filter((event) => event.code === "KeyR"),
+        map(
+        () =>
+            (state: State): State =>
+            state.gameState === "gameOver"
+                ? {
+                    ...initialState,
+                    previousGameHistory: [
+                    ...state.previousGameHistory,
+                    state.currentGameHistory.map((p) => ({ y: p.y, time: p.time - state.gameStartTime })),
+                    ],
+                    time: state.time,
+                }
+                : state
+        )
+    );
+
+    const pause$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
+        filter((event) => event.code === "KeyE"),
+        map(
+            () =>
+            (state: State): State =>
+                state.gameState === "playing"
+                ? { ...state, gameState: "paused" }
+                : state.gameState === "paused"
+                ? { ...state, gameState: "playing" }
+                : state
+        )
     )
-  );
-
-  const tick$ = interval(Constants.TICK_RATE_MS).pipe(
-    map(
-      () =>
-        (state: State): State =>
-          state.gameState !== "playing"
-            ? state
-            : ((newTime: number) =>
-                [
-                  updateBirdPhysics,
-                  (s: State) => updatePipes(s, pipeDataArray),
-                  updateScore,
-                  (s: State) => checkCollisions(s),
-                  (s: State) => checkGameEnd(s, pipeDataArray),
-                ].reduce((acc, fn) => fn(acc), { ...state, time: newTime } as State))(
-                state.time + Constants.TICK_RATE_MS
-              )
-    )
-  );
-
-  const startGame$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
-    filter((event) => event.code === "Space"),
-    map(
-      () =>
-        (state: State): State =>
-          state.gameState === "waiting"
-            ? { ...state, gameState: "playing", gameStartTime: state.time, currentGameHistory: [] }
-            : state
-    )
-  );
-
-  const restart$ = fromEvent<KeyboardEvent>(document, "keydown").pipe(
-    filter((event) => event.code === "KeyR"),
-    map(
-      () =>
-        (state: State): State =>
-          state.gameState === "gameOver"
-            ? {
-                ...initialState,
-                previousGameHistory: [
-                  ...state.previousGameHistory,
-                  state.currentGameHistory.map((p) => ({ y: p.y, time: p.time - state.gameStartTime })),
-                ],
-                time: state.time,
-              }
-            : state
-    )
-  );
-
-  return merge(jump$, tick$, startGame$, restart$).pipe(
-    scan<(s: State) => State, State>((acc: State, update: (s: State) => State) => update(acc), initialState),
-    startWith(initialState),
-    takeWhile((_: State) => true, true)
-  );
+    return merge(jump$, tick$, startGame$, restart$, pause$).pipe(
+        scan<(s: State) => State, State>((acc: State, update: (s: State) => State) => update(acc), initialState),
+        startWith(initialState),
+        takeWhile((_: State) => true, true)
+    );
 };
 
 
