@@ -69,6 +69,8 @@ const Constants = {
     CEILING: 0,
     BOUNCE_SPEED: 6,
     BOUNCE_HEIGHT: -8,
+    PIPE_SPEED: 2,
+    RAND_VELOCITY: 3,
 } as const;
 
 // User input
@@ -83,6 +85,7 @@ type Pipe = Readonly<{
     x: number;
     gapY: number;
     gapHeight: number;
+    isPass: boolean;
     svgElements: Readonly<{
         top: SVGElement;
         bottom: SVGElement;
@@ -93,7 +96,7 @@ type PipeData = Readonly<{
     gap_y: number;
     gap_height: number;
     time: number;
-}>
+}>;
 
 
 // State processing
@@ -108,6 +111,7 @@ type State = Readonly<{
     time: number;
     gameStartTime: number;
     lives: number;
+    score: number;
     lastGamePlay: ReadonlyArray<Readonly<{ y: number; time: number }>>;
     presentGamePlay: ReadonlyArray<Readonly<{ y: number; time: number }>>;
 }>;
@@ -122,6 +126,7 @@ const initialState: State = {
     time: 0,
     gameStartTime: 0,
     lives: 3,
+    score: 0,
     lastGamePlay: [],
     presentGamePlay: [],
 };
@@ -139,6 +144,52 @@ abstract class RNG {
         (2 * hash) / (RNG.m - 1) - 1; // in [-1, 1]
 }
 
+const parseCsv = (csvInfo: string): ReadonlyArray<PipeData> => {
+    const lines = csvInfo.trim().split('\n');
+    return lines.slice(1)
+        .filter(line => line.trim() !== '')
+        .map((line, index) => {
+            const [gapY, gapHeight, time] = line.split(',');
+            return {
+                gap_y: parseFloat(gapY),
+                gap_height: parseFloat(gapHeight),
+                time: parseFloat(time) * 1000, 
+            };
+        });
+};
+
+const pipeCreation = (pipeData: PipeData, index: number, svg: SVGSVGElement): Pipe => {
+    const gapY = pipeData.gap_y * Viewport.CANVAS_HEIGHT;
+    const gapHeight = pipeData.gap_height * Viewport.CANVAS_HEIGHT;
+
+    const top = createSvgElement(svg.namespaceURI, "rect", {
+        x: `${Viewport.CANVAS_WIDTH}`,
+        y: "0",
+        width: `${Constants.PIPE_WIDTH}`,
+        height: `${gapY - gapHeight / 2}`,
+        fill: "green",
+    });
+
+    const bottom = createSvgElement(svg.namespaceURI, "rect", {
+        x: `${Viewport.CANVAS_WIDTH}`,
+        y: `${gapY + gapHeight / 2}`,
+        width: `${Constants.PIPE_WIDTH}`,
+        height: `${Viewport.CANVAS_HEIGHT - (gapY + gapHeight / 2)}`,
+        fill: "green",
+    });
+
+    svg.appendChild(top);
+    svg.appendChild(bottom);
+
+    return {
+        id: `pipe-${index}`,
+        x: Viewport.CANVAS_WIDTH,
+        gapY,
+        gapHeight,
+        isPass: false,
+        svgElements: { top, bottom }
+    };
+};
 
 const pipesCollisionChecker = (bird_y: number, pipe: Pipe): boolean => {
     const leftBird = Birb.START_AT;
@@ -157,6 +208,54 @@ const pipesCollisionChecker = (bird_y: number, pipe: Pipe): boolean => {
 const boundaryCollisionChecker = (bird_y: number): boolean =>
     bird_y <= Constants.CEILING || bird_y + Birb.HEIGHT >= Constants.GROUND;
 
+const pipesUpdator = (
+    state: State,
+    pipeDataArray: ReadonlyArray<PipeData>,
+    svg: SVGSVGElement
+): State => {
+    const updatedPipes = state.pipes
+        .map(pipe => {
+            const newX = pipe.x - Constants.PIPE_SPEED;
+            pipe.svgElements.top.setAttribute("x", `${newX}`);
+            pipe.svgElements.bottom.setAttribute("x", `${newX}`);
+            return { ...pipe, x: newX };
+        })
+        .filter(pipe => {
+            const keep = pipe.x + Constants.PIPE_WIDTH > -50;
+            if (!keep) {
+                pipe.svgElements.top.remove();
+                pipe.svgElements.bottom.remove();
+            }
+            return keep;
+        });
+
+    const newPipes = pipeDataArray
+        .filter(pipeData =>
+            pipeData.time <= state.time - state.gameStartTime &&
+            !updatedPipes.some(pipe => pipe.id.endsWith(pipeDataArray.indexOf(pipeData).toString()))
+        )
+        .map((pipeData, index) =>
+            pipeCreation(pipeData, pipeDataArray.indexOf(pipeData), svg)
+        );
+
+    return {
+        ...state,
+        pipes: [...updatedPipes, ...newPipes]
+    };
+};
+
+
+const gameOverchecker = (state: State, pipeDataArray: ReadonlyArray<PipeData>): State => {
+    const allPipesPassed = state.pipes.length > 0 && 
+        state.pipes.every(pipe => pipe.passed) &&
+        state.time - state.gameStartTime > Math.max(...pipeDataArray.map(p => p.time)) + 5000;
+    
+    if (allPipesPassed && state.gameState === "playing") {
+        return { ...state, gameState: "gameOver" };
+    }
+    
+    return state;
+};
 
 const jump$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(
         document,
@@ -232,24 +331,25 @@ const gameStart$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(doc
     })
 );
 
+
 const gameRestart$: Observable<(s: State) => State> = fromEvent<KeyboardEvent>(document, "keydown").pipe(
-    filter(event => event.code ==="KeyR"),
-    map(() => (s: State) => {
-        return s.gameState ==="gameOver" ? {...initialState, time: s.time}: s;
-    })
+  filter(event => event.code === "KeyR"),
+  filter(event => !event.repeat),
+  map(() => (s: State) =>
+    s.gameState === "gameOver"
+      ? { ...initialState, time: s.time, lastGamePlay: s.presentGamePlay.length > 0 ? s.presentGamePlay : s.lastGamePlay }
+      : s
+  )
 );
+
 
 const ghostBird = (
     play: ReadonlyArray<Readonly<{ y: number; time: number }>>,
-    playTime: number, // Changed from Number to number
-    index: number = 0
-): (Readonly<{ y: number; time: number }>) | null =>
-    index >= play.length
-    ? null
-    : (play[index].time <= playTime &&
-       (index + 1 >= play.length || play[index + 1].time > playTime))
-      ? play[index]
-      : ghostBird(play, playTime, index + 1);
+    playTime: number
+): number | null => {
+    const history = play.filter(entry => entry.time <= playTime);
+    return history.length > 0 ? history[history.length - 1].y : null;
+};
 
 
 // Rendering (side effects)
@@ -348,15 +448,17 @@ const render = (): ((s: State) => void) => {
 
         livesText.textContent = `${s.lives}`; 
 
-        const playTime = s.time - s.gameStartTime;
+        const playTime = s.gameState === "playing" ? s.time - s.gameStartTime :
+        s.gameState === "gameOver" ? s.lastGamePlay.length > 0 ? s.lastGamePlay[s.lastGamePlay.length - 1].time : 0
+        : 0;
         const ghostPos = ghostBird(s.lastGamePlay, playTime);
 
-        ghostPos
+        ghostPos !== null && (s.gameState === "playing" || s.gameState === "gameOver")
          ? (
             ghostBirdImg.setAttribute("x", `${Birb.START_AT - Birb.WIDTH / 2}`),
             ghostBirdImg.setAttribute(
                 "y",
-                `${Math.max(0, Math.min(ghostPos.y, Viewport.CANVAS_HEIGHT - Birb.HEIGHT))}`
+                `${Math.max(0, Math.min(ghostPos, Viewport.CANVAS_HEIGHT - Birb.HEIGHT))}`
             ),
             ghostBirdImg.style.visibility = "visible"
             )
